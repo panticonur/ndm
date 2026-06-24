@@ -6,6 +6,10 @@
 # Скрипт сам собирает и запускает сервер, гоняет сценарии из задания
 # и в конце гасит сервер. Код возврата 0 — все тесты прошли.
 
+# set -u — обращение к необъявленной переменной становится фатальной ошибкой,
+# а не молчаливой пустой строкой. Ловит опечатки в именах (например $SRV_PD
+# вместо $SRV_PID), которые иначе тихо превратились бы в пустой kill/rm и
+# замаскировали ошибку.
 set -u
 PORT="${1:-8080}"
 BASE="http://127.0.0.1:$PORT"
@@ -36,7 +40,18 @@ go build -o "$BIN" main.go || { echo "build failed"; exit 1; }
 SRV_PID=$!
 echo "Собираем и запускаем сервер на $PORT, бинарник $BIN, PID=$SRV_PID"
 
-trap 'kill $SRV_PID 2>/dev/null; rm -f "$BIN"' EXIT
+# Единый обработчик очистки. Повторный `trap ... EXIT` не добавляется, а ЗАМЕНЯЕТ
+# предыдущий, поэтому весь cleanup держим в одном месте.
+#
+# cleanup ссылается на временные файлы разделов 6 и 7, а создаются они (mktemp)
+# гораздо ниже. При досрочном выходе (например, сервер не поднялся на проверке
+# kill -0) trap сработает, когда этих переменных ещё нет, и под set -u раскрытие
+# "$TEST6_L" аварийно прервало бы сам обработчик. Поэтому объявляем их заранее
+# пустыми: rm -f "" безвреден, а cleanup отрабатывает целиком при любом выходе.
+TEST6_L=""; TEST7_A=""; TEST7_B=""
+cleanup() { kill "$SRV_PID" 2>/dev/null; rm -f "$BIN" "$TEST6_L" "$TEST7_A" "$TEST7_B"; }
+trap cleanup EXIT
+
 sleep 1 # Даём процессу время стартовать и проверяем, что он жив
 kill -0 "$SRV_PID" 2>/dev/null  || { echo "run failed"; exit 1; }
 
@@ -83,14 +98,15 @@ echo "       (ждали ~$((SECONDS - t0))s)"
 
 
 echo "6) GET ждёт по timeout и получает пришедшее сообщение"
-L=$(mktemp)
-trap 'rm -f "$L"' EXIT
-curl -s "$BASE/late?timeout=3" >"$L" &
+TEST6_L=$(mktemp)
+curl -s "$BASE/late?timeout=3" >"$TEST6_L" &
 PL=$!
 sleep 1
+
 curl -s -X PUT "$BASE/late?v=ping" >/dev/null
 wait $PL
-rl=$(cat "$L"); rm -f "$L"
+
+rl=$(cat "$TEST6_L"); rm -f "$TEST6_L"
 if [[ "$rl" == "ping" ]]; then
   echo "  OK   дождался 'ping'"; PASS=$((PASS+1))
 else
@@ -98,14 +114,12 @@ else
 fi
 
 
-echo "6) Порядок ожидания: кто раньше запросил — тот раньше получил"
-A=$(mktemp); B=$(mktemp)
-trap 'rm -f "$A" "$B"' EXIT
-
-curl -s "$BASE/ord?timeout=5" >"$A" &   # потребитель A (первый)
+echo "7) Порядок ожидания: кто раньше запросил — тот раньше получил"
+TEST7_A=$(mktemp); TEST7_B=$(mktemp)
+curl -s "$BASE/ord?timeout=5" >"$TEST7_A" &   # потребитель A (первый)
 PA=$!
 sleep 0.4
-curl -s "$BASE/ord?timeout=5" >"$B" &   # потребитель B (второй)
+curl -s "$BASE/ord?timeout=5" >"$TEST7_B" &   # потребитель B (второй)
 PB=$!
 sleep 0.4
 
@@ -114,7 +128,7 @@ sleep 0.2
 curl -s -X PUT "$BASE/ord?v=second" >/dev/null
 wait $PA $PB
 
-ra=$(cat "$A"); rb=$(cat "$B"); rm -f "$A" "$B"
+ra=$(cat "$TEST7_A"); rb=$(cat "$TEST7_B"); rm -f "$TEST7_A" "$TEST7_B"
 if [[ "$ra" == "first" && "$rb" == "second" ]]; then
   echo "  OK   A='first' B='second'"; PASS=$((PASS+1))
 else
