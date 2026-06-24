@@ -43,7 +43,7 @@ echo "Собираем и запускаем сервер на $PORT, бинар
 # Единый обработчик очистки. Повторный `trap ... EXIT` не добавляется, а ЗАМЕНЯЕТ
 # предыдущий, поэтому весь cleanup держим в одном месте.
 #
-# cleanup ссылается на временные файлы разделов 6 и 7, а создаются они (mktemp)
+# cleanup ссылается на временные файлы тестов 6 и 7, а создаются они (mktemp)
 # гораздо ниже. При досрочном выходе (например, сервер не поднялся на проверке
 # kill -0) trap сработает, когда этих переменных ещё нет, и под set -u раскрытие
 # "$TEST6_L" аварийно прервало бы сам обработчик. Поэтому объявляем их заранее
@@ -106,7 +106,7 @@ sleep 1
 curl -s -X PUT "$BASE/late?v=ping" >/dev/null
 wait $PL
 
-rl=$(cat "$TEST6_L"); rm -f "$TEST6_L"
+rl=$(cat "$TEST6_L")
 if [[ "$rl" == "ping" ]]; then
   echo "  OK   дождался 'ping'"; PASS=$((PASS+1))
 else
@@ -128,7 +128,7 @@ sleep 0.2
 curl -s -X PUT "$BASE/ord?v=second" >/dev/null
 wait $PA $PB
 
-ra=$(cat "$TEST7_A"); rb=$(cat "$TEST7_B"); rm -f "$TEST7_A" "$TEST7_B"
+ra=$(cat "$TEST7_A"); rb=$(cat "$TEST7_B")
 if [[ "$ra" == "first" && "$rb" == "second" ]]; then
   echo "  OK   A='first' B='second'"; PASS=$((PASS+1))
 else
