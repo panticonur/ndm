@@ -29,17 +29,22 @@ expect() {
 BIN="$(mktemp -u).exe"
 go build -o "$BIN" main.go || { echo "build failed"; exit 1; }
 "$BIN" "$PORT" &
-SRV=$!
-trap 'kill $SRV 2>/dev/null; rm -f "$BIN"' EXIT
-sleep 0.7   # дать серверу подняться
+SRV_PID=$!
+
+trap 'kill $SRV_PID 2>/dev/null; rm -f "$BIN"' EXIT
+sleep 1 # Даём процессу время стартовать и проверяем, что он жив
+kill -0 "$SRV_PID" 2>/dev/null  || { echo "run failed"; exit 1; }
+
 
 echo "1) PUT кладёт, GET забирает по FIFO, пустая очередь -> 404"
 expect "put pet=cat"           PUT "/pet?v=cat"        200 ""
 expect "put pet=dog"           PUT "/pet?v=dog"        200 ""
+expect "put pet=''"            PUT "/pet?v="           200 ""
 expect "put role=manager"      PUT "/role?v=manager"   200 ""
 expect "put role=executive"    PUT "/role?v=executive" 200 ""
 expect "get pet -> cat"        GET "/pet"              200 "cat"
 expect "get pet -> dog"        GET "/pet"              200 "dog"
+expect "get pet -> ''"         GET "/pet"              200 ""
 expect "get pet -> 404"        GET "/pet"              404 ""
 expect "get pet -> 404"        GET "/pet"              404 ""
 expect "get role -> manager"   GET "/role"             200 "manager"
@@ -48,6 +53,16 @@ expect "get role -> 404"       GET "/role"             404 ""
 
 echo "2) PUT без параметра v -> 400"
 expect "put без v -> 400"      PUT "/pet"              400 ""
+
+echo "3) PUT без PATH"
+expect "put без PATH"          PUT "?v=1"              200 ""
+expect "put без PATH"          PUT "?v=2"              200 ""
+expect "put пустой PATH"       PUT "/?v=3"             200 ""
+expect "put пустой PATH"       PUT "/?v=4"             200 ""
+expect "get без PATH"          GET ""                  200 "1"
+expect "get без PATH"          GET "/"                 200 "2"
+expect "get без PATH"          GET ""                  200 "3"
+expect "get без PATH"          GET "/"                 200 "4"
 
 echo "3) GET без timeout на пустой очереди -> сразу 404"
 expect "get пусто, без timeout" GET "/none"            404 ""
@@ -92,4 +107,9 @@ fi
 
 echo
 echo "ИТОГО: passed=$PASS failed=$FAIL"
+
+kill $SRV_PID
+wait "$SRV_PID"
+rm -f "$BIN"
+
 [[ $FAIL -eq 0 ]]

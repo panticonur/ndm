@@ -30,6 +30,14 @@ func (b *broker) getQueue(name string) *queue {
 	return q
 }
 
+// dropIfEmpty удаляет очередь из реестра, если в ней не осталось ни сообщений,
+// ни ждущих. Вызывать только под b.mu.
+func (b *broker) dropIfEmpty(name string, q *queue) {
+	if q.messages.Len() == 0 && q.waiters.Len() == 0 {
+		delete(b.queues, name)
+	}
+}
+
 func (b *broker) put(name, msg string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -37,6 +45,7 @@ func (b *broker) put(name, msg string) {
 	if e := q.waiters.Front(); e != nil { // есть ждущий — отдаём сразу ему
 		q.waiters.Remove(e)
 		e.Value.(chan string) <- msg
+		b.dropIfEmpty(name, q) // отдали последнему ждущему — очередь опустела
 		return
 	}
 	q.messages.PushBack(msg)
@@ -46,11 +55,13 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	b.mu.Lock()
 	q := b.getQueue(name)
 	if e := q.messages.Front(); e != nil { // сообщение уже готово
-		q.messages.Remove(e)
+		msg := q.messages.Remove(e).(string)
+		b.dropIfEmpty(name, q)
 		b.mu.Unlock()
-		return e.Value.(string), true
+		return msg, true
 	}
 	if timeout == 0 { // ждать не просили
+		b.dropIfEmpty(name, q)
 		b.mu.Unlock()
 		return "", false
 	}
@@ -69,6 +80,7 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 			return msg, true
 		default:
 			q.waiters.Remove(we)
+			b.dropIfEmpty(name, q)
 			return "", false
 		}
 	}
