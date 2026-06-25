@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Функциональные тесты брокера очередей (main.go).
+# Функциональные тесты брокера очередей (queue_broker.go).
 #
 # Запуск:   bash tests.sh [PORT]          (PORT по умолчанию 8080)
 # Требуется: go в PATH и curl.
@@ -46,7 +46,7 @@ expect() {
 
 # --- сборка и запуск сервера ---
 BIN="$(mktemp -u).exe"
-go build -o "$BIN" main.go || { echo "build failed"; exit 1; }
+go build -o "$BIN" queue_broker.go || { echo "build failed"; exit 1; }
 "$BIN" "$PORT" &
 SRV_PID=$!
 echo "Собираем и запускаем сервер на $PORT, бинарник $BIN, PID=$SRV_PID"
