@@ -41,17 +41,23 @@ trap 'kill "$SRV_PID" 2>/dev/null; rm -f "$BIN" "$ERR"' EXIT
 sleep 1
 kill -0 "$SRV_PID" 2>/dev/null || { echo "сервер не запустился"; exit 2; }
 
-echo "Штурм: десятки одновременных PUT/GET с таймаутами на общие очереди..."
-pids=()
-for i in $(seq 1 40); do curl -s "$BASE/q?timeout=2"    >/dev/null & pids+=($!); done
-for i in $(seq 1 40); do curl -s -X PUT "$BASE/q?v=m$i" >/dev/null & pids+=($!); done
-for i in $(seq 1 30); do
-  curl -s -X PUT "$BASE/a?v=x" >/dev/null & pids+=($!)
-  curl -s "$BASE/a?timeout=1"  >/dev/null & pids+=($!)
-  curl -s "$BASE/b?timeout=1"  >/dev/null & pids+=($!)
+# Прицельный штурм: концентрируем нагрузку на одной очереди за раунд и бьём в
+# окно гонки «таймаут против доставки». В каждом раунде K получателей встают с
+# коротким timeout и ждут у самой границы; затем влетают K продьюсеров — их
+# доставка гонится с истечением таймаутов (тот самый вложенный select). Несколько
+# раундов варьируют переплетения планировщика — гонки вероятностны.
+ROUNDS=4
+K=40
+echo "Штурм: раундов — $ROUNDS, в каждом по $K ждущих+продьюсеров, прицельно в окно timeout/доставка..."
+for r in $(seq 1 "$ROUNDS"); do
+  q="race$r" # своя очередь на раунд, чтобы каждый старт был с чистого листа
+  pids=()
+  for i in $(seq 1 "$K"); do curl -s "$BASE/$q?timeout=1" >/dev/null & pids+=($!); done
+  sleep 0.9 # почти до истечения их таймаута
+  for i in $(seq 1 "$K"); do curl -s -X PUT "$BASE/$q?v=m$i" >/dev/null & pids+=($!); done
+  wait "${pids[@]}" # ждём только curl'ы этого раунда, НЕ сервер
 done
-wait "${pids[@]}" # ждём только curl'ы, НЕ сервер (иначе wait завис бы навсегда)
-sleep 1           # дать детектору дописать возможный отчёт
+sleep 1 # дать детектору дописать возможный отчёт
 
 if grep -q "DATA RACE" "$ERR"; then
   echo "НАЙДЕНА ГОНКА ДАННЫХ:"
