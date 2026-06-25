@@ -84,26 +84,25 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	case msg := <-ch:
 		return msg, true
 	case <-time.After(timeout):
-		// put мог отдать нам сообщение в зазоре между срабатыванием таймаута
-		// и захватом мьютекса.
+		// put мог отдать сообщение между срабатыванием таймаута и захватом мьютекса,
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		// Поэтому под локом проверяем канал, чтобы сообщение не потерялось.
+		// поэтому, чтобы сообщение не потерялось под локом проверяем канал.
 		select {
 		case msg := <-ch:
 			return msg, true
 		default: // Если сообщения нет, значит мы реально таймаутнули,
 			q.waiters.Remove(we) // снимаем себя из очереди ожидающих,
 			b.dropIfEmpty(name, q)
-			return "", false // сообщения нет — таймаут; 404 поставит handle.
+			return "", false // сообщения нет, handle вернет 404.
 		}
 	}
 }
 
 func (b *broker) handle(w http.ResponseWriter, r *http.Request) {
 	// Имя очереди = путь без ведущего "/". Пустое имя это валидная очередь "".
-	// TrimPrefix, а не Path[1:]: у absolute-form запроса без пути (GET http://host)
-	// r.URL.Path == "", и Path[1:] паниковал бы, а TrimPrefix на "" вернёт "".
+	// TrimPrefix не паникует в отличии от Path[1:]
+	// для absolute-form запроса без пути (GET http://host)
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	switch r.Method {
 	case http.MethodPut:
@@ -117,7 +116,7 @@ func (b *broker) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		b.put(name, q.Get("v"))
 	case http.MethodGet:
-		// нет/битый timeout → 0 → не ждём
+		// нет или битый timeout = 0
 		timeout, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
 		if msg, ok := b.get(name, time.Duration(timeout)*time.Second); ok {
 			w.Write([]byte(msg))
