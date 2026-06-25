@@ -45,6 +45,8 @@ func (b *broker) put(name, msg string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	q := b.getQueue(name)
+	// Отдаём голове очереди ждущих — тому, кто запросил раньше всех (get встаёт
+	// в хвост через PushBack). Так получатели обслуживаются в порядке запросов.
 	if e := q.waiters.Front(); e != nil { // есть ждущий — отдаём сразу ему
 		q.waiters.Remove(e)
 		e.Value.(chan string) <- msg
@@ -57,6 +59,8 @@ func (b *broker) put(name, msg string) {
 func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	b.mu.Lock()
 	q := b.getQueue(name)
+	// Инвариант: при живом ждущем put отдаёт сразу ему, сообщениям копиться не даёт.
+	// Поэтому сперва берём готовое сообщение, и лишь если его нет — встаём ждать.
 	if e := q.messages.Front(); e != nil { // сообщение уже готово
 		msg := q.messages.Remove(e).(string)
 		b.dropIfEmpty(name, q)
@@ -68,7 +72,7 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 		b.mu.Unlock()
 		return "", false
 	}
-	ch := make(chan string, 1)
+	ch := make(chan string, 1) // буфер 1: put доставляет под мьютексом и не должен блокироваться
 	we := q.waiters.PushBack(ch)
 	b.mu.Unlock()
 
@@ -95,16 +99,22 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 }
 
 func (b *broker) handle(w http.ResponseWriter, r *http.Request) {
+	// Имя очереди = путь без ведущего "/". TrimPrefix (не [1:]) не паникует на пустом
+	// пути (OPTIONS *); пустое имя — просто валидная очередь "".
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	switch r.Method {
 	case http.MethodPut:
 		q := r.URL.Query()
+		// Has, а не Get(...) == "": Get вернёт "" и при отсутствии v, и при пустом
+		// значении (?v=). 400 нужен только когда v отсутствует, а ?v= — валидное
+		// пустое сообщение. Has отличает «нет параметра» от «параметр пустой».
 		if !q.Has("v") {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		b.put(name, q.Get("v"))
 	case http.MethodGet:
+		// Ошибку Atoi глотаем намеренно: нет timeout или мусор → 0 → не ждём, сразу отвечаем.
 		timeout, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
 		if msg, ok := b.get(name, time.Duration(timeout)*time.Second); ok {
 			w.Write([]byte(msg))
