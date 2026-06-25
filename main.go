@@ -59,8 +59,9 @@ func (b *broker) put(name, msg string) {
 func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	b.mu.Lock()
 	q := b.getQueue(name)
-	// Инвариант: при живом ждущем put отдаёт сразу ему, сообщениям копиться не даёт.
-	// Поэтому сперва берём готовое сообщение, и лишь если его нет — встаём ждать.
+	// Инвариант: хотя бы один из списков всегда пуст — при живом ждущем put отдаёт
+	// сразу ему, копиться сообщениям не даёт. Поэтому сперва берём готовое сообщение,
+	// и лишь если его нет — встаём ждать.
 	if e := q.messages.Front(); e != nil { // сообщение уже готово
 		msg := q.messages.Remove(e).(string)
 		b.dropIfEmpty(name, q)
