@@ -12,6 +12,9 @@ import (
 )
 
 type queue struct {
+	// Указатели, а не значения: list.List — самоссылающаяся структура (кольцо вокруг
+	// сторожевого root), копировать её по значению нельзя — копия рвёт внутренние
+	// ссылки. Через указатель копируется он сам, список остаётся целым.
 	messages *list.List // FIFO готовых сообщений (string)
 	waiters  *list.List // FIFO ожидающих получателей (chan string, буфер 1)
 }
@@ -69,14 +72,19 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	we := q.waiters.PushBack(ch)
 	b.mu.Unlock()
 
+	// Ждём вне мьютекса: либо put положит сообщение в наш канал, либо истечёт таймаут.
 	select {
 	case msg := <-ch:
 		return msg, true
 	case <-time.After(timeout):
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		// Вложенный select закрывает гонку: put мог отдать нам сообщение в зазоре
+		// между срабатыванием таймаута и захватом мьютекса. Поэтому под локом ещё раз
+		// неблокирующе (ветка default) проверяем канал — иначе это сообщение
+		// потерялось бы. Пришло — забираем; нет — снимаем себя из ждущих и отдаём 404.
 		select {
-		case msg := <-ch: // put успел доставить между таймаутом и локом
+		case msg := <-ch:
 			return msg, true
 		default:
 			q.waiters.Remove(we)
