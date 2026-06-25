@@ -13,7 +13,7 @@ import (
 
 type queue struct {
 	messages *list.List // FIFO готовых сообщений
-	waiters  *list.List // FIFO ожидающих получателей
+	waiters  *list.List // FIFO ожидающих получателей (хранит chan string)
 }
 
 type broker struct {
@@ -57,7 +57,7 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	q := b.getQueue(name)
 	// Хотя бы один из списков messages и waiters всегда пуст.
 	// При существующем ждущем put отдаёт сразу ему, копиться сообщениям не даёт.
-	// Поэтому сперва берём готовое сообщение, а если его нет, то ждем.
+	// Поэтому сперва берём готовое сообщение, а если его нет, то ждём.
 	if e := q.messages.Front(); e != nil { // сообщение уже готово
 		msg := q.messages.Remove(e).(string)
 		b.dropIfEmpty(name, q)
@@ -69,12 +69,12 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 		b.mu.Unlock()
 		return "", false
 	}
-	// put доставляет сообщение этому получателю, посылая сообщение через ch ПОД мьютексом.
+	// put доставляет сообщение получателю, посылая его в ch ПОД мьютексом.
 	// В это время get может уйти в ветку time.After и сам будет ожидать мьютекс,
 	// который держит put. При небуферизованном канале вышла бы взаимная блокировка.
 	// Буферизованный канал даёт put возможность положить сообщение и сразу отпустить мьютекс,
 	// а проснувшийся по таймауту get заберёт его из буфера во вложенном select ниже.
-	// Размер ровно 1 потому что для каждого ожидающего по одному сообщению.
+	// Размер 1: у каждого ожидающего свой канал, и put шлёт в него максимум одно сообщение.
 	ch := make(chan string, 1)
 	we := q.waiters.PushBack(ch) // Добавляем в хвост очереди.
 	b.mu.Unlock()
@@ -95,14 +95,15 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 		default: // Если сообщения нет, значит мы реально таймаутнули,
 			q.waiters.Remove(we) // снимаем себя из очереди ожидающих,
 			b.dropIfEmpty(name, q)
-			return "", false // отдаём 404.
+			return "", false // сообщения нет — таймаут; 404 поставит handle.
 		}
 	}
 }
 
 func (b *broker) handle(w http.ResponseWriter, r *http.Request) {
-	// Имя очереди = путь без ведущего "/".
-	// Пустое имя это валидная очередь "".
+	// Имя очереди = путь без ведущего "/". Пустое имя это валидная очередь "".
+	// TrimPrefix, а не Path[1:]: у absolute-form запроса без пути (GET http://host)
+	// r.URL.Path == "", и Path[1:] паниковал бы, а TrimPrefix на "" вернёт "".
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	switch r.Method {
 	case http.MethodPut:
@@ -116,6 +117,7 @@ func (b *broker) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		b.put(name, q.Get("v"))
 	case http.MethodGet:
+		// нет/битый timeout → 0 → не ждём
 		timeout, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
 		if msg, ok := b.get(name, time.Duration(timeout)*time.Second); ok {
 			w.Write([]byte(msg))
