@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Проверка queue_broker.go на гонки данных под конкурентной нагрузкой.
+# Собирает с детектором гонок (-race), устраивает штурм из множества одновременных
+# PUT/GET с таймаутами на общие очереди и смотрит, не сработал ли детектор.
+# Запускать из корня репозитория.
+#
+# Запуск:   bash race.sh [PORT]            (PORT по умолчанию 8090)
+# Требуется: go и curl в PATH; для -race — cgo и C-компилятор на PATH
+#            (CGO_ENABLED=1 включается скриптом; видимость компилятора — на машине,
+#            поиск компилятора здесь намеренно не делаем).
+# Коды:     0 — гонок нет; 1 — найдена гонка; 2 — не удалось собрать -race / запустить.
+
+# source-guard: при подключении через `source` перезапускаемся в отдельном bash,
+# чтобы set -u не утёк в текущую оболочку (как в tests.sh).
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  bash "${BASH_SOURCE[0]}" "$@"
+  return $?
+fi
+
+set -u
+PORT="${1:-8090}"
+BASE="http://127.0.0.1:$PORT"
+
+BIN="$(mktemp -u).exe"
+ERR="$(mktemp)"
+
+# -race требует cgo и C-компилятора на PATH. Если их нет — это не гонка, а
+# невозможность проверить, поэтому отдельный код выхода 2.
+if ! CGO_ENABLED=1 go build -race -o "$BIN" queue_broker.go 2>"$ERR"; then
+  echo "Сборка с -race не удалась — нужен cgo и C-компилятор на PATH:"
+  cat "$ERR"
+  rm -f "$BIN" "$ERR"
+  exit 2
+fi
+echo "build -race OK"
+
+# stderr сервера направляем в $ERR: детектор пишет туда отчёт при срабатывании.
+"$BIN" "$PORT" 2>"$ERR" &
+SRV_PID=$!
+trap 'kill "$SRV_PID" 2>/dev/null; rm -f "$BIN" "$ERR"' EXIT
+sleep 1
+kill -0 "$SRV_PID" 2>/dev/null || { echo "сервер не запустился"; exit 2; }
+
+echo "Штурм: десятки одновременных PUT/GET с таймаутами на общие очереди..."
+pids=()
+for i in $(seq 1 40); do curl -s "$BASE/q?timeout=2"    >/dev/null & pids+=($!); done
+for i in $(seq 1 40); do curl -s -X PUT "$BASE/q?v=m$i" >/dev/null & pids+=($!); done
+for i in $(seq 1 30); do
+  curl -s -X PUT "$BASE/a?v=x" >/dev/null & pids+=($!)
+  curl -s "$BASE/a?timeout=1"  >/dev/null & pids+=($!)
+  curl -s "$BASE/b?timeout=1"  >/dev/null & pids+=($!)
+done
+wait "${pids[@]}" # ждём только curl'ы, НЕ сервер (иначе wait завис бы навсегда)
+sleep 1           # дать детектору дописать возможный отчёт
+
+if grep -q "DATA RACE" "$ERR"; then
+  echo "НАЙДЕНА ГОНКА ДАННЫХ:"
+  cat "$ERR"
+  exit 1
+fi
+echo "Гонок данных не обнаружено."
