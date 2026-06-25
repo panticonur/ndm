@@ -31,7 +31,7 @@ func (b *broker) getQueue(name string) *queue {
 }
 
 // Удаляет очередь из реестра, если в ней нет ни сообщений, ни ожидающих.
-// Вызывать только под b.mu.
+// Вызывается только под мьютексом.
 func (b *broker) dropIfEmpty(name string, q *queue) {
 	if q.messages.Len() == 0 && q.waiters.Len() == 0 {
 		delete(b.queues, name)
@@ -42,12 +42,11 @@ func (b *broker) put(name, msg string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	q := b.getQueue(name)
-	// Отдаём сообщение голове очереди ждущих. Тому, кто запросил раньше всех.
-	// Так получатели обслуживаются в порядке запросов.
-	if e := q.waiters.Front(); e != nil { // есть ждущий — отдаём сразу ему
+	// Отдаём сообщение ожидающему из головы очереди - тому, кто был первым.
+	if e := q.waiters.Front(); e != nil {
 		q.waiters.Remove(e)
 		e.Value.(chan string) <- msg
-		b.dropIfEmpty(name, q) // отдали последнему ждущему — очередь опустела
+		b.dropIfEmpty(name, q) // Если отдали последнему, то очередь опустела.
 		return
 	}
 	q.messages.PushBack(msg)
@@ -56,7 +55,7 @@ func (b *broker) put(name, msg string) {
 func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 	b.mu.Lock()
 	q := b.getQueue(name)
-	// Инвариант: хотя бы один из списков всегда пуст.
+	// Хотя бы один из списков messages и waiters всегда пуст.
 	// При существующем ждущем put отдаёт сразу ему, копиться сообщениям не даёт.
 	// Поэтому сперва берём готовое сообщение, а если его нет, то ждем.
 	if e := q.messages.Front(); e != nil { // сообщение уже готово
@@ -65,15 +64,14 @@ func (b *broker) get(name string, timeout time.Duration) (string, bool) {
 		b.mu.Unlock()
 		return msg, true
 	}
-	if timeout == 0 { // ждать не просили
+	if timeout == 0 {
 		b.dropIfEmpty(name, q)
 		b.mu.Unlock()
 		return "", false
 	}
 	// put доставляет сообщение этому получателю, посылая сообщение через ch ПОД мьютексом.
-	// Небуферизованный канал заблокировался бы до момента.
 	// В это время get может уйти в ветку time.After и сам будет ожидать мьютекс,
-	// который держит put. Вышла бы взаимная блокировка.
+	// который держит put. При небуферизованном канале вышла бы взаимная блокировка.
 	// Буферизованный канал даёт put возможность положить сообщение и сразу отпустить мьютекс,
 	// а проснувшийся по таймауту get заберёт его из буфера во вложенном select ниже.
 	// Размер ровно 1 потому что для каждого ожидающего по одному сообщению.
