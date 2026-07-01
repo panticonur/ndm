@@ -21,7 +21,7 @@ set -u
 PORT="${1:-8090}"
 BASE="http://127.0.0.1:$PORT"
 
-BIN="$(mktemp -u).exe"
+BIN="$(mktemp -u)"
 ERR="$(mktemp)"
 
 # -race требует cgo и C-компилятора на PATH. Если их нет — это не гонка, а

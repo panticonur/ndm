@@ -40,7 +40,7 @@ expect() {
 
 
 # --- сборка и запуск сервера ---
-BIN="$(mktemp -u).exe"
+BIN="$(mktemp -u)"
 go build -o "$BIN" queue_broker.go || { echo "build failed"; exit 1; }
 "$BIN" "$PORT" &
 SRV_PID=$!
